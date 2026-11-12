@@ -1,0 +1,213 @@
+	.file	"mysql.S"
+	.machinemode zarch
+	.machine "z13"
+	
+	.include	"system.def"
+	
+	.text
+	.align	8
+	.global connexion
+	.type	connexion, @function
+
+connexion:								// en sortie : R2 = code retour, R3 = MYSQL*
+	STMG	R6, R15, 48(R15)
+	LAY		R15, -160(R15)
+	XGR		R4, R4						// groups, NULL
+	XGR		R3, R3						// argv, NULL
+	XGR		R2, R2						// argc, aucun argument
+	BRASL	R14, mysql_server_init@PLT	// int mysql_server_init(int argc, char **argv, char **groups)
+	LTGR	R2, R2						// r2 = code retour
+	JE		SERVER_INIT_OK				// si succès
+	LARL	R2, .LC0					// adresse du message ci-dessous
+	BRASL	R14, puts@PLT				// if ( mysql_library_init ( 0, NULL, NULL ) ) { fprintf(stderr, "Initialisation de 'MySQL client library' impossible.\n"); exit ( EXIT_FAILURE ); }
+	LGFI	R2, 1						// EXIT_FAILURE
+	BRASL	R14, exit@PLT				// exit ( EXIT_FAILURE );
+	
+SERVER_INIT_OK:
+	BRASL	R14, mysql_init@PLT			// mysql_init(MYSQL *mysql)
+	LGR		R10, R2						// pointeur sur une structure, sauvé dans R10
+	LTGR	R10, R10
+	JNE		INIT_OK						// pointeur non NULL, donc c'est bon
+	LARL	R2, .LC1					// Init failed...
+	BRASL	R14, puts@PLT
+	LGFI	R2, 1						// return EXIT_FAILURE;
+	J		CEND
+	
+INIT_OK:
+	LARL	R4, MY.CNF					// ./my.cnf
+	LGFI	R3, 4						// MYSQL_READ_DEFAULT_FILE (argument type: char *) Read options from the named option file instead of from my.cnf.
+	LGR		R2, R10						// pointe vers la structure
+	BRASL	R14, mysql_options@PLT		// int mysql_options ( mysql, MYSQL_READ_DEFAULT_FILE, (void *)"./my.cnf" ); R2 ignoré
+	LGFI	R6, 0						// default data base = NULL
+	LGFI	R5, 0						// password = NULL
+	LGFI	R4, 0						// user = NULL
+	LGFI	R3, 0						// hostname = NULL
+	LGR		R2, R10						// structure MYSQL*
+	BRASL	R14, mysql_real_connect@PLT	// if ( !mysql_real_connect ( mysql,   NULL, NULL, NULL, NULL, 0 port number, 0 for default, NULL socket file or named pipe name, CLIENT_FOUND_ROWS connection flags
+	LTGR	R2, R2
+	JNE		REAL_CONNECT_OK
+	LARL	R2, .LC3
+	BRASL	R14, puts@PLT
+	LGFI	R2, 1
+	J		CEND
+	
+REAL_CONNECT_OK:
+	XGR		R2, R2						// return EXIT_SUCCESS; */
+CEND:
+	LGR		R3, R10						// MYSQL*
+	LAY		R15, 160(R15)
+	LMG		R6, R15, 48(R15)
+	BR		R14
+	
+	.text
+	.align	8
+	.global traitement_requete
+	.type	traitement_requete, @function
+	
+traitement_requete:								// en entrée R2 = MYSQL*, en sortie R3 = MYSQL*
+	STMG	R6, R15, 48(R15)
+	LAY		R15, -160(R15)
+	LGR		R10, R2						// sauver R2 MYSQL*
+	LARL	R3, REQUETE
+	BRASL	R14, mysql_query@PLT
+	LTGR	R2, R2
+	JE		QUERY_OK
+	LGR		R2, R10
+	LARL	R3, REQUETE
+	BRASL	R14, mysql_error@PLT		// retourne char* en R2
+	LGR		R3, R2
+	LARL	R2, .LC4					// query failed
+	BRASL	R14, printf@PLT
+	LGFI	R2, 1						// EXIT_FAILURE
+	J		TEND
+	
+QUERY_OK:
+	LGR		R2, R10
+	BRASL	R14, mysql_store_result@PLT
+	LGR		R9, R2						// R9 = MYSQL_RES
+	LTGR	R2, R2						// R2 = MYSQL_RES
+	JNE		STORE_RESULT_OK
+	LGR		R2, R10
+	LARL	R3, REQUETE
+	BRASL	R14, mysql_error@PLT
+	LGR		R3, R2
+	LARL	R2, .LC5					// "Couldn't get results set: %s\n"
+	BRASL	R14, printf@PLT
+	J		.L11
+	
+STORE_RESULT_OK:
+	LGFI	R2, '{'
+	BRASL	R14, putchar@PLT
+	LGR		R2, R9
+	BRASL	R14, mysql_num_fields@PLT
+	LGR		R8, R2						// R8 = nombre de colonnes
+	LGR		R2, R9
+	BRASL	R14, mysql_num_rows@PLT
+	LGR		R7, R2						// R7 = nombre de lignes
+LIGNE:
+	LGR		R2, R9
+	BRASL	R14, mysql_fetch_row@PLT
+	LTGR	R2, R2
+	JNE		LIGNE_OK
+	LARL	R2, .LC5					// could not get result
+	BRASL	R14, puts@PLT
+	LGFI	R2, 1						// EXIT_FAILURE
+	J		TEND
+		
+LIGNE_OK:
+	XGR		R11, R11
+	LGR		R13, R8						// nombre de colonnes
+	LGR		R12, R2						// sauver R2 (MYSQL_RES)
+	LGFI	R2, '['
+	BRASL	R14, putchar@PLT
+COLONNE:
+	LG		R3, 0(R11, R12)
+	LARL	R2, POURCENT_S
+	BRASL	R14, printf@PLT
+	CLGFI	R13, 1
+	JNH		DERNIER_CHAMP
+	LGFI	R2, ','
+	BRASL	R14, putchar@PLT
+	AGFI	R11, 8
+DERNIER_CHAMP:
+	BRCTG	R13, COLONNE
+	LGFI	R2, ']'
+	BRASL	R14, putchar@PLT
+	BRCTG	R7, LIGNE
+	LGR		R2, R9						// R2 = MYSQL_RES
+	BRASL	R14, mysql_free_result@PLT
+	LGFI	R2, '}'
+	BRASL	R14, putchar@PLT
+	LGFI	R2, '\n'
+	BRASL	R14, putchar@PLT
+.L11:
+	XGR		R2, R2
+TEND:
+	LGR		R3, R10						// restituer MYSQL*
+	LAY		R15, 160(R15)
+	LMG		R6, R15, 48(R15)
+	BR		R14
+
+	.align	8
+	.global deconnexion
+	.type	deconnexion, @function
+	
+deconnexion:						// en entrée : R2 = MYSQL*
+	STMG	R6, R15, 48(R15)
+	LAY		R15, -160(R15)
+	BRASL	R14, mysql_close@PLT
+	BRASL	R14, mysql_server_end@PLT
+	LAY		R15, 160(R15)
+	LMG		R6, R15, 48(R15)
+	BR		R14
+
+	.text
+	.align	8
+	.global main
+	.type	main, @function
+	
+main:
+	STMG	R6, R15, 48(R15)
+	LAY		R15, -160(R15)
+	BRASL	R14, connexion@PLT
+	LTGR 	R2, R2
+	JNE		MEND
+	LGR		R2, R3					// MYSQL* récupéré à la connexion
+	BRASL	R14, traitement_requete@PLT
+//	LTGR	R2, R2
+//	JNE		.L20
+	LGR		R2, R3
+	BRASL	R14, deconnexion@PLT
+MEND:
+	LAY		R15, 160(R15)
+	LMG		R6, R15, 48(R15)
+	BR		R14	
+
+	.section	.rodata
+	.align	2
+.LC0:
+	.string	"Initialisation de 'MySQL client library' impossible.\n"
+	.align	2
+.LC1:
+	.string	"Erreur d'initialisation, problème mémoire ?"
+	.align	2
+MY.CNF:
+	.string	"./my.cnf"
+	.align	2
+.LC3:
+	.string	"Erreur de connexion.\n"
+	.align	2
+.LC4:
+	.string	"Cette requête a échoué : %s\n"
+	.align	2
+.LC5:
+	.string	"Obtention des résultats sans succès.\n"
+	.align	2
+REQUETE:
+//	.string	"SELECT lib_nom, lib_prenom, lib_naissance FROM individu as i, nom as n, prenom as p, naissance as s where i.nom=n.id_nom and i.prenom=p.id_prenom and i.naissance=s.id_naissance and s.lib_naissance = 1980"
+	.string	"SELECT lib_nom, lib_prenom, lib_naissance FROM individu as i, nom as n, prenom as p, naissance as s where i.nom=n.id_nom and i.prenom=p.id_prenom and i.naissance=s.id_naissance"
+	.align	2
+POURCENT_S:
+	.asciz	"'%s'"
+	
+	.section	.note.GNU-stack,"",@progbits
